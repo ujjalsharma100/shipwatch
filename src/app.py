@@ -5,7 +5,11 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from . import store
 from .client import PaymentClient
 from .models import OrderStatus
-from .webhooks import verify_signature
+from .webhooks import (
+    SIGNATURE_ENFORCEMENT_DATE,
+    enforce_signature_verification,
+    verify_signature,
+)
 
 log = logging.getLogger("shipwatch")
 
@@ -19,7 +23,12 @@ async def payment_webhook(
 ):
     raw_body = await request.body()
     if not verify_signature(raw_body, x_provider_signature):
-        raise HTTPException(status_code=401, detail="bad signature")
+        if enforce_signature_verification():
+            raise HTTPException(status_code=401, detail="bad signature")
+        log.warning(
+            "webhook signature mismatch; accepting until %s",
+            SIGNATURE_ENFORCEMENT_DATE.isoformat(),
+        )
     event = await request.json()
     order_id = event["data"]["metadata"]["order_id"]
     if event["type"] == "payment.succeeded":
