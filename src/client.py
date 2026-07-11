@@ -11,10 +11,17 @@ INITIAL_CAPTURE_BACKOFF_SECONDS = 2
 MAX_CAPTURE_BACKOFF_SECONDS = 10
 
 
+CAPTURE_TIMEOUT_SECONDS = 15
+
+
 class CaptureError(Exception):
-    def __init__(self, resp: httpx.Response):
+    def __init__(
+        self, resp: httpx.Response | None = None, message: str | None = None
+    ):
         self.response = resp
-        super().__init__(f"capture failed: {resp.status_code}")
+        if message is None:
+            message = f"capture failed: {resp.status_code}"
+        super().__init__(message)
 
 
 class PaymentClient:
@@ -31,29 +38,47 @@ class PaymentClient:
 
     async def capture(self, order_id: str, amount_cents: int) -> CaptureResult:
         for attempt in range(MAX_CAPTURE_ATTEMPTS):
-            resp = await self._post(
-                "/v1/captures",
-                {"amount": amount_cents},
-                headers={"Idempotency-Key": order_id},
-            )
+            last_attempt = attempt == MAX_CAPTURE_ATTEMPTS - 1
+            try:
+                resp = await self._post(
+                    "/v1/captures",
+                    {"amount": amount_cents},
+                    headers={"Idempotency-Key": order_id},
+                )
+            except CaptureError:
+                # Connection failures are retryable like a 5xx response.
+                if last_attempt:
+                    raise
+                await self._backoff(attempt)
+                continue
+
             if resp.status_code < 400:
                 return CaptureResult.from_json(resp.json())
 
             is_retryable = resp.status_code == 429 or resp.status_code >= 500
-            if not is_retryable or attempt == MAX_CAPTURE_ATTEMPTS - 1:
+            if not is_retryable or last_attempt:
                 raise CaptureError(resp)
 
-            backoff = min(
-                INITIAL_CAPTURE_BACKOFF_SECONDS * (2**attempt),
-                MAX_CAPTURE_BACKOFF_SECONDS,
-            )
-            await asyncio.sleep(backoff)
+            await self._backoff(attempt)
 
         raise RuntimeError("capture retry loop exited unexpectedly")
+
+    async def _backoff(self, attempt: int) -> None:
+        backoff = min(
+            INITIAL_CAPTURE_BACKOFF_SECONDS * (2**attempt),
+            MAX_CAPTURE_BACKOFF_SECONDS,
+        )
+        await asyncio.sleep(backoff)
 
     async def _post(
         self, path: str, payload: dict, headers: dict[str, str] | None = None
     ) -> httpx.Response:
-        return await self._http.post(
-            self._base_url + path, json=payload, headers=headers
-        )
+        try:
+            return await self._http.post(
+                self._base_url + path,
+                json=payload,
+                headers=headers,
+                timeout=CAPTURE_TIMEOUT_SECONDS,
+            )
+        except httpx.TransportError as exc:
+            raise CaptureError(message=f"capture request failed: {exc}") from exc
