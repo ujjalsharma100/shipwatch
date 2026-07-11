@@ -23,6 +23,11 @@ class CaptureError(Exception):
             message = f"capture failed: {resp.status_code}"
         super().__init__(message)
 
+class CaptureRetriesExhausted(Exception):
+    def __init__(self, order_id: str, amount_cents: int):
+        super().__init__(
+            f"capture retries exhausted for order {order_id} ({amount_cents} cents)"
+        )
 
 class PaymentClient:
     def __init__(self, api_key: str, base_url: str = API_BASE_URL):
@@ -61,7 +66,7 @@ class PaymentClient:
 
             await self._backoff(attempt)
 
-        raise RuntimeError("capture retry loop exited unexpectedly")
+        raise CaptureRetriesExhausted(order_id, amount_cents)
 
     async def _backoff(self, attempt: int) -> None:
         backoff = min(
