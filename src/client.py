@@ -6,6 +6,9 @@ import httpx
 from .models import CaptureResult
 
 API_BASE_URL = os.environ.get("PROVIDER_API_URL", "https://api.provider.com")
+MAX_CAPTURE_ATTEMPTS = 3
+INITIAL_CAPTURE_BACKOFF_SECONDS = 2
+MAX_CAPTURE_BACKOFF_SECONDS = 10
 
 
 class CaptureError(Exception):
@@ -27,10 +30,30 @@ class PaymentClient:
         return cls(api_key=os.environ.get("PROVIDER_API_KEY", "dev-key"))
 
     async def capture(self, order_id: str, amount_cents: int) -> CaptureResult:
-        resp = await self._post("/v1/captures", {"amount": amount_cents})
-        if resp.status_code >= 400:
-            raise CaptureError(resp)
-        return CaptureResult.from_json(resp.json())
+        for attempt in range(MAX_CAPTURE_ATTEMPTS):
+            resp = await self._post(
+                "/v1/captures",
+                {"amount": amount_cents},
+                headers={"Idempotency-Key": order_id},
+            )
+            if resp.status_code < 400:
+                return CaptureResult.from_json(resp.json())
 
-    async def _post(self, path: str, payload: dict) -> httpx.Response:
-        return await self._http.post(self._base_url + path, json=payload)
+            is_retryable = resp.status_code == 429 or resp.status_code >= 500
+            if not is_retryable or attempt == MAX_CAPTURE_ATTEMPTS - 1:
+                raise CaptureError(resp)
+
+            backoff = min(
+                INITIAL_CAPTURE_BACKOFF_SECONDS * (2**attempt),
+                MAX_CAPTURE_BACKOFF_SECONDS,
+            )
+            await asyncio.sleep(backoff)
+
+        raise RuntimeError("capture retry loop exited unexpectedly")
+
+    async def _post(
+        self, path: str, payload: dict, headers: dict[str, str] | None = None
+    ) -> httpx.Response:
+        return await self._http.post(
+            self._base_url + path, json=payload, headers=headers
+        )
