@@ -1,6 +1,6 @@
 # shipwatch
 
-This is the **demo repo from the [TracesHub launch video](https://www.youtube.com/watch?v=J4LPhV9wURg)** — a small payment-capture service with a mixed human + multi-agent commit history, so you can poke real line-level AI attribution yourself.
+This is the **demo repo from the [TracesHub demo video](https://www.youtube.com/watch?v=J4LPhV9wURg)** — a small payment-capture service with a mixed human + multi-agent commit history, so you can poke real line-level AI attribution yourself.
 
 | | |
 |---|---|
